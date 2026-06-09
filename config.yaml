@@ -1,0 +1,25 @@
+# Default configuration for the parallel labeling tool.
+# CLI flags override any value here.
+
+# Transcription language and task passed to the HF ASR pipeline.
+language: th
+task: transcribe
+
+# Audio is resampled to this sample rate (mono) before transcription.
+sample_rate: 16000
+
+# Model registry. Each entry: key -> {model_id, device, generate_kwargs}.
+# If the device is unavailable, the worker falls back to CPU (logged as a warning).
+models:
+  pathumma:
+    model_id: nectec/Pathumma-whisper-th-large-v3
+    device: cuda:0
+    generate_kwargs: {}
+  typhoon:
+    model_id: typhoon-ai/typhoon-whisper-large-v3
+    device: cuda:1
+    generate_kwargs: {}
+  distill:
+    model_id: biodatlab/distill-whisper-th-large-v3
+    device: cuda:2
+    generate_kwargs: {}
