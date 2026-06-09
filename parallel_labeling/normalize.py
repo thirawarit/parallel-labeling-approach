@@ -25,7 +25,13 @@ def normalize_text(text: str) -> str:
     """Normalize text for comparison.
 
     Steps: Unicode NFC, lowercase (for any Latin), Thai-digit -> ASCII-digit,
-    strip punctuation, then collapse all whitespace.
+    strip punctuation, then remove all whitespace.
+
+    Thai is not written with inter-word spaces; some models emit word-segmented
+    output (spaces between words) and others do not. Removing all whitespace puts
+    every model on equal footing so character-level CER reflects transcription
+    content, not segmentation style. Word-level metrics re-tokenize separately
+    (see ``tokenize_thai``) and are unaffected.
     """
     if not text:
         return ""
@@ -33,8 +39,20 @@ def normalize_text(text: str) -> str:
     normalized = normalized.lower()
     normalized = normalized.translate(_THAI_DIGITS)
     normalized = normalized.translate(_PUNCT_TABLE)
-    normalized = _WHITESPACE_RE.sub(" ", normalized).strip()
+    normalized = _WHITESPACE_RE.sub("", normalized)
     return normalized
+
+
+def strip_word_spaces(text: str) -> str:
+    """Remove inter-word whitespace while preserving characters, case, and punctuation.
+
+    Thai is not written with spaces between words; models that emit word-segmented
+    output add them. This collapses all whitespace away to yield a clean label,
+    unlike ``normalize_text`` which also lowercases and strips punctuation.
+    """
+    if not text:
+        return ""
+    return _WHITESPACE_RE.sub("", text)
 
 
 def tokenize_thai(text: str) -> List[str]:

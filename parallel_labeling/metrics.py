@@ -11,20 +11,28 @@ from typing import (Dict, List, Optional, Sequence, Tuple)
 
 import jiwer
 
-from parallel_labeling.normalize import (normalize_text, tokenize_thai)
+from parallel_labeling.normalize import (normalize_text, strip_word_spaces, tokenize_thai)
+
+# Number of decimal places all reported scores are rounded to.
+SCORE_NDIGITS: int = 4
+
+
+def round_score(value: float) -> float:
+    """Round a score to ``SCORE_NDIGITS`` decimal places for consistent output."""
+    return round(value, SCORE_NDIGITS)
 
 
 def character_error_rate(reference: str, hypothesis: str) -> float:
     """Character-level edit distance normalized by reference length.
 
     Both empty -> 0.0 (perfect agreement). Empty reference with non-empty
-    hypothesis -> 1.0.
+    hypothesis -> 1.0. Result is rounded to ``SCORE_NDIGITS`` places.
     """
     if not reference and not hypothesis:
         return 0.0
     if not reference:
         return 1.0
-    return float(jiwer.cer(reference, hypothesis))
+    return round_score(float(jiwer.cer(reference, hypothesis)))
 
 
 def word_error_rate_thai(reference: str, hypothesis: str) -> float:
@@ -39,7 +47,7 @@ def word_error_rate_thai(reference: str, hypothesis: str) -> float:
         return 0.0
     if not ref_tokens:
         return 1.0
-    return float(jiwer.wer(" ".join(ref_tokens), " ".join(hyp_tokens)))
+    return round_score(float(jiwer.wer(" ".join(ref_tokens), " ".join(hyp_tokens))))
 
 
 @dataclass
@@ -59,6 +67,10 @@ class FileComparison:
     pairs: List[PairMetrics] = field(default_factory=list)
     mean_agreement_per_model: Dict[str, float] = field(default_factory=dict)
     unanimous: bool = False
+    # Consensus pick: the model whose output disagrees least with the others
+    # (the medoid). ``best_model`` is None when no model produced usable output.
+    best_model: Optional[str] = None
+    best_text: Optional[str] = None
 
 
 def _agreement_inputs(
@@ -97,15 +109,27 @@ def compare_hypotheses(
             per_model_count[key] += 1
 
     mean_per_model: Dict[str, float] = {
-        k: (per_model_sum[k] / per_model_count[k]) if per_model_count[k] else 0.0
+        k: round_score(per_model_sum[k] / per_model_count[k]) if per_model_count[k] else 0.0
         for k in usable
     }
 
     all_present: bool = len(usable) == len(model_keys) and len(model_keys) > 0
     unanimous: bool = all_present and len({norm_cache[k] for k in usable}) == 1
 
+    # Consensus pick (medoid): the usable model with the lowest mean disagreement.
+    # Ties broken by model_keys order so the choice is deterministic. With a
+    # single usable model it is the pick by default; with none, there is no pick.
+    best_model: Optional[str] = None
+    best_text: Optional[str] = None
+    if usable:
+        best_model = min(usable, key=lambda k: (mean_per_model[k], model_keys.index(k)))
+        # Clean pseudo-label: drop inserted word-spaces, keep original characters.
+        best_text = strip_word_spaces(hypotheses[best_model] or "")
+
     return FileComparison(
         pairs=pairs,
         mean_agreement_per_model=mean_per_model,
         unanimous=unanimous,
+        best_model=best_model,
+        best_text=best_text,
     )

@@ -74,6 +74,8 @@ def _comparison_to_dict(comparison: FileComparison) -> dict:
         "pairs": pairs,
         "mean_agreement_per_model": comparison.mean_agreement_per_model,
         "unanimous": comparison.unanimous,
+        "best_model": comparison.best_model,
+        "best_text": comparison.best_text,
     }
 
 

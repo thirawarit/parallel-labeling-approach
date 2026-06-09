@@ -8,6 +8,7 @@ from pathlib import (Path)
 from typing import (Any, Dict, List, Tuple)
 
 from parallel_labeling.logging_utils import (get_logger)
+from parallel_labeling.metrics import (SCORE_NDIGITS)
 
 logger = get_logger(__name__)
 
@@ -46,7 +47,7 @@ def write_csv(rows: List[dict], output_dir: Path, model_keys: List[str]) -> Path
     pair_labels: List[str] = _all_pair_labels(rows)
     path: Path = output_dir / CSV_FILENAME
 
-    header: List[str] = ["file_name", "text", "unanimous"]
+    header: List[str] = ["file_name", "text", "unanimous", "best_model", "best_text"]
     header += [f"hyp_{k}" for k in model_keys]
     header += [f"error_{k}" for k in model_keys]
     for label in pair_labels:
@@ -63,7 +64,13 @@ def write_csv(rows: List[dict], output_dir: Path, model_keys: List[str]) -> Path
             pair_map: Dict[str, dict] = {_pair_label(p["pair"]): p for p in comp.get("pairs", [])}
             mean_map: Dict[str, Any] = comp.get("mean_agreement_per_model", {})
 
-            record: List[Any] = [row.get("file_name", ""), row.get("text", ""), comp.get("unanimous", "")]
+            record: List[Any] = [
+                row.get("file_name", ""),
+                row.get("text", ""),
+                comp.get("unanimous", ""),
+                comp.get("best_model", "") or "",
+                comp.get("best_text", "") or "",
+            ]
             record += [hyp.get(k, "") if hyp.get(k) is not None else "" for k in model_keys]
             record += [err.get(k, "") for k in model_keys]
             for label in pair_labels:
@@ -99,13 +106,13 @@ def write_summary(rows: List[dict], output_dir: Path, model_keys: List[str]) -> 
             model_errors[key] = model_errors.get(key, 0) + 1
 
     def _mean(values: List[float]) -> float:
-        return statistics.fmean(values) if values else 0.0
+        return round(statistics.fmean(values), SCORE_NDIGITS) if values else 0.0
 
     total: int = len(rows)
     summary: Dict[str, Any] = {
         "total_files": total,
         "unanimous_files": unanimous_count,
-        "unanimous_pct": (unanimous_count / total * 100.0) if total else 0.0,
+        "unanimous_pct": round(unanimous_count / total * 100.0, SCORE_NDIGITS) if total else 0.0,
         "mean_cer_norm_per_pair": {p: _mean(v) for p, v in pair_cer.items()},
         "mean_wer_norm_per_pair": {p: _mean(v) for p, v in pair_wer.items()},
         "mean_agreement_per_model": {k: _mean(v) for k, v in model_agreement.items()},
@@ -130,6 +137,7 @@ _HTML_HEAD: str = """<!DOCTYPE html>
  .disagree { background: #fff3e0; }
  .err { color: #b00020; font-style: italic; }
  .file { font-family: monospace; font-size: .85rem; }
+ .best { background: #d8ecff; font-weight: bold; }
  caption { font-weight: bold; text-align: left; margin-bottom: .5rem; }
 </style></head><body>
 """
@@ -142,23 +150,27 @@ def write_html(rows: List[dict], output_dir: Path, model_keys: List[str]) -> Pat
     parts.append("<table><thead><tr><th>file</th><th>reference</th>")
     for key in model_keys:
         parts.append(f"<th>{html.escape(key)}</th>")
-    parts.append("<th>unanimous</th></tr></thead><tbody>")
+    parts.append("<th>best</th><th>unanimous</th></tr></thead><tbody>")
 
     for row in rows:
         comp: Dict[str, Any] = row.get("comparison", {})
         hyp: Dict[str, Any] = row.get("hypotheses", {})
         err: Dict[str, Any] = row.get("errors", {})
         unanimous: bool = bool(comp.get("unanimous"))
+        best_model: str = comp.get("best_model") or ""
+        best_text: str = comp.get("best_text") or ""
         row_cls: str = "unanimous" if unanimous else "disagree"
         parts.append(f'<tr class="{row_cls}">')
         parts.append(f'<td class="file">{html.escape(row.get("file_name", ""))}</td>')
         parts.append(f"<td>{html.escape(row.get('text', '') or '')}</td>")
         for key in model_keys:
             cell_err: str = err.get(key, "")
+            cell_cls: str = ' class="best"' if key == best_model else ""
             if cell_err:
                 parts.append(f'<td class="err">{html.escape(cell_err)}</td>')
             else:
-                parts.append(f"<td>{html.escape(hyp.get(key) or '')}</td>")
+                parts.append(f"<td{cell_cls}>{html.escape(hyp.get(key) or '')}</td>")
+        parts.append(f'<td class="best">{html.escape(best_model)}<br>{html.escape(best_text)}</td>')
         parts.append(f"<td>{'✓' if unanimous else '✗'}</td>")
         parts.append("</tr>")
 
