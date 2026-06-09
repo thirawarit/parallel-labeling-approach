@@ -61,10 +61,15 @@ def _make_dataset(root: Path) -> None:
     (root / "metadata.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _make_config() -> Config:
-    """Three synthetic models, all on CPU."""
+def _make_config(devices: Dict[str, str]) -> Config:
+    """Three synthetic models with caller-chosen devices.
+
+    Distinct devices exercise the multi-process path; a shared device exercises
+    the sequential single-process path. The fake device strings are passed through
+    ``_resolve_device`` unchanged (they are neither cuda nor a real GPU).
+    """
     models: Dict[str, ModelConfig] = {
-        key: ModelConfig(key=key, model_id=f"fake/{key}", device="cpu")
+        key: ModelConfig(key=key, model_id=f"fake/{key}", device=devices[key])
         for key in ("alpha", "beta", "gamma")
     }
     return Config(models=models, language="th", task="transcribe", sample_rate=16000)
@@ -94,10 +99,9 @@ def _patch_pipeline() -> None:
     models_mod._build_pipeline = fake_build  # type: ignore[assignment]
 
 
-def run_smoke_test() -> None:
-    """Drive the full pipeline and assert the comparison/report invariants."""
-    _patch_pipeline()
-    runner_mod.mp.get_context = lambda method=None: _ThreadContext()  # type: ignore[assignment]
+def _assert_pipeline(config: Config, label: str) -> None:
+    """Run the full pipeline for one config and assert all invariants."""
+    import logging
 
     with TemporaryDirectory() as tmp:
         root: Path = Path(tmp)
@@ -105,51 +109,63 @@ def run_smoke_test() -> None:
         output_dir: Path = root / "out"
         _make_dataset(dataset_dir)
 
-        config: Config = _make_config()
         items = load_dataset(dataset_dir)
-        assert len(items) == 3, f"expected 3 items, got {len(items)}"
+        assert len(items) == 3, f"[{label}] expected 3 items, got {len(items)}"
 
-        import logging
         results_path: Path = run(config, items, output_dir, logging.WARNING)
-        assert results_path.is_file(), "results.jsonl was not written"
+        assert results_path.is_file(), f"[{label}] results.jsonl was not written"
 
         rows: List[dict] = [json.loads(l) for l in results_path.read_text().splitlines() if l.strip()]
         by_name: Dict[str, dict] = {r["file_name"]: r for r in rows}
-        assert len(rows) == 3, f"expected 3 result rows, got {len(rows)}"
+        assert len(rows) == 3, f"[{label}] expected 3 result rows, got {len(rows)}"
 
         # 0001: all three agree -> unanimous.
         r1 = by_name["audio/0001.wav"]
-        assert r1["comparison"]["unanimous"] is True, "0001 should be unanimous"
+        assert r1["comparison"]["unanimous"] is True, f"[{label}] 0001 should be unanimous"
 
         # 0002: gamma disagrees -> not unanimous, all models present.
         r2 = by_name["audio/0002.wav"]
-        assert r2["comparison"]["unanimous"] is False, "0002 should not be unanimous"
-        assert r2["errors"] == {}, "0002 should have no errors"
+        assert r2["comparison"]["unanimous"] is False, f"[{label}] 0002 should not be unanimous"
+        assert r2["errors"] == {}, f"[{label}] 0002 should have no errors"
 
         # 0003: gamma fails -> error recorded, hypothesis None, not unanimous.
         r3 = by_name["audio/0003.wav"]
-        assert "gamma" in r3["errors"], "0003 should record gamma error"
-        assert r3["hypotheses"]["gamma"] is None, "failed model hypothesis must be None"
-        assert r3["comparison"]["unanimous"] is False, "0003 cannot be unanimous"
+        assert "gamma" in r3["errors"], f"[{label}] 0003 should record gamma error"
+        assert r3["hypotheses"]["gamma"] is None, f"[{label}] failed model hypothesis must be None"
+        assert r3["comparison"]["unanimous"] is False, f"[{label}] 0003 cannot be unanimous"
 
         # Reports generate without error and produce all four artifacts.
         csv_path, html_path, summary_path = write_reports(
             results_path, output_dir, config.model_keys
         )
         for artifact in (csv_path, html_path, summary_path):
-            assert artifact.is_file(), f"missing report artifact: {artifact}"
+            assert artifact.is_file(), f"[{label}] missing report artifact: {artifact}"
 
         summary: dict = json.loads(summary_path.read_text())
-        assert summary["total_files"] == 3
-        assert summary["unanimous_files"] == 1
-        assert summary["error_counts_per_model"].get("gamma", 0) == 1
+        assert summary["total_files"] == 3, f"[{label}] total_files"
+        assert summary["unanimous_files"] == 1, f"[{label}] unanimous_files"
+        assert summary["error_counts_per_model"].get("gamma", 0) == 1, f"[{label}] gamma errors"
 
         # Resume: rerunning should add no new rows.
         run(config, items, output_dir, logging.WARNING)
         rows_after: List[dict] = [
             json.loads(l) for l in results_path.read_text().splitlines() if l.strip()
         ]
-        assert len(rows_after) == 3, "resume should not duplicate rows"
+        assert len(rows_after) == 3, f"[{label}] resume should not duplicate rows"
+
+
+def run_smoke_test() -> None:
+    """Exercise both execution paths and assert identical invariants."""
+    _patch_pipeline()
+    runner_mod.mp.get_context = lambda method=None: _ThreadContext()  # type: ignore[assignment]
+
+    # Distinct devices -> multi-process path (thread-shim backed).
+    multi_cfg: Config = _make_config({"alpha": "dev0", "beta": "dev1", "gamma": "dev2"})
+    _assert_pipeline(multi_cfg, "multi-process")
+
+    # Shared device -> sequential single-process path.
+    shared_cfg: Config = _make_config({"alpha": "cpu", "beta": "cpu", "gamma": "cpu"})
+    _assert_pipeline(shared_cfg, "sequential")
 
     print("SMOKE TEST PASSED")
 

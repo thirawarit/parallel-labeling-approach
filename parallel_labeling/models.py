@@ -1,13 +1,15 @@
-"""Per-process model worker: load one HF ASR pipeline and transcribe a file list.
+"""Model loading and transcription.
 
-Each model runs in its own process (one per model) so the three large-v3 models
-can occupy separate GPUs. A worker loads its model once, then streams results back
-to the parent through a queue so the parent can write incrementally.
+When models occupy separate GPUs, each runs in its own process (one per model)
+via ``run_model_worker``, streaming results back through a queue. When models
+share a device, the runner instead drives ``transcribe_items`` directly in a
+single process (see ``runner._run_sequential``). Both paths share the same
+load helper and per-file error handling.
 """
 
 import logging
 from dataclasses import (dataclass)
-from typing import (Any, Dict, List, Optional)
+from typing import (Any, Dict, Iterator, List, Optional)
 
 from parallel_labeling.config import (Config, ModelConfig)
 from parallel_labeling.dataset import (AudioItem)
@@ -62,6 +64,51 @@ def _build_pipeline(model_cfg: ModelConfig, config: Config) -> Any:
     )
 
 
+def load_pipeline(model_cfg: ModelConfig, config: Config) -> Any:
+    """Load an ASR pipeline for one model. Thin wrapper over ``_build_pipeline``."""
+    return _build_pipeline(model_cfg, config)
+
+
+def transcribe_items(
+    asr: Any,
+    model_cfg: ModelConfig,
+    config: Config,
+    items: List[AudioItem],
+) -> Iterator[TranscriptionResult]:
+    """Transcribe every item with a loaded pipeline, yielding one result each.
+
+    Per-file failures are caught and reported as a ``TranscriptionResult`` with an
+    ``error`` so the run never aborts. Used by both the subprocess worker and the
+    single-process sequential path.
+    """
+    generate_kwargs: Dict[str, Any] = {
+        "language": config.language,
+        "task": config.task,
+        **model_cfg.generate_kwargs,
+    }
+    for item in items:
+        try:
+            output: Dict[str, Any] = asr(
+                str(item.audio_path),
+                generate_kwargs=generate_kwargs,
+            )
+            text: str = (output.get("text") or "").strip()
+            yield TranscriptionResult(
+                model_key=model_cfg.key,
+                file_name=item.file_name,
+                text=text,
+                error=None,
+            )
+        except Exception as exc:
+            logger.warning("%s failed on %s: %s", model_cfg.key, item.file_name, exc)
+            yield TranscriptionResult(
+                model_key=model_cfg.key,
+                file_name=item.file_name,
+                text=None,
+                error=str(exc),
+            )
+
+
 def run_model_worker(
     model_cfg: ModelConfig,
     config: Config,
@@ -71,19 +118,13 @@ def run_model_worker(
 ) -> None:
     """Worker entrypoint: load the model, transcribe every item, enqueue results.
 
-    Runs in a child process. Failures on a single file are caught and reported as
-    a ``TranscriptionResult`` with an ``error`` so the run never aborts. A final
-    ``None`` sentinel is enqueued to signal this worker is done.
+    Runs in a child process. A final ``None`` sentinel is enqueued to signal this
+    worker is done. On load failure, every item is reported with a load error.
     """
     configure_logging(log_level)
-    generate_kwargs: Dict[str, Any] = {
-        "language": config.language,
-        "task": config.task,
-        **model_cfg.generate_kwargs,
-    }
 
     try:
-        asr = _build_pipeline(model_cfg, config)
+        asr = load_pipeline(model_cfg, config)
     except Exception as exc:  # model failed to load -> every file errors out
         logger.exception("Failed to load model %s", model_cfg.key)
         for item in items:
@@ -98,30 +139,7 @@ def run_model_worker(
         result_queue.put(None)
         return
 
-    for item in items:
-        try:
-            output: Dict[str, Any] = asr(
-                str(item.audio_path),
-                generate_kwargs=generate_kwargs,
-            )
-            text: str = (output.get("text") or "").strip()
-            result_queue.put(
-                TranscriptionResult(
-                    model_key=model_cfg.key,
-                    file_name=item.file_name,
-                    text=text,
-                    error=None,
-                )
-            )
-        except Exception as exc:
-            logger.warning("%s failed on %s: %s", model_cfg.key, item.file_name, exc)
-            result_queue.put(
-                TranscriptionResult(
-                    model_key=model_cfg.key,
-                    file_name=item.file_name,
-                    text=None,
-                    error=str(exc),
-                )
-            )
+    for result in transcribe_items(asr, model_cfg, config, items):
+        result_queue.put(result)
 
     result_queue.put(None)

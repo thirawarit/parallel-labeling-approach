@@ -10,6 +10,9 @@ sample_rate: 16000
 
 # Model registry. Each entry: key -> {model_id, device, generate_kwargs}.
 # If the device is unavailable, the worker falls back to CPU (logged as a warning).
+# Devices on distinct GPUs (cuda:0/1/2) run one process per model in parallel.
+# If two or more models share a device (e.g. all set to cuda:0), they run
+# sequentially in a single process, kept loaded together, to avoid GPU contention.
 models:
   pathumma:
     model_id: nectec/Pathumma-whisper-th-large-v3
