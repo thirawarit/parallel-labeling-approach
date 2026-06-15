@@ -29,8 +29,9 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset-dir",
         type=Path,
+        nargs="+",
         required=True,
-        help="HuggingFace AudioFolder dir containing metadata.jsonl.",
+        help="One or more HuggingFace AudioFolder dirs, each containing metadata.jsonl.",
     )
     parser.add_argument(
         "--config",
@@ -80,16 +81,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     log_level: int = getattr(logging, args.log_level)
     configure_logging(log_level)
 
-    dataset_dir: Path = args.dataset_dir
-    if not dataset_dir.is_dir():
-        logger.error("Dataset dir does not exist: %s", dataset_dir)
+    dataset_dirs: List[Path] = args.dataset_dir
+    missing: List[Path] = [d for d in dataset_dirs if not d.is_dir()]
+    if missing:
+        for d in missing:
+            logger.error("Dataset dir does not exist: %s", d)
         return 2
 
     config: Config = load_config(args.config)
     config = _apply_overrides(config, args)
     logger.info("Models: %s", ", ".join(config.model_keys))
 
-    items: List[AudioItem] = load_dataset(dataset_dir)
+    items: List[AudioItem] = []
+    for dataset_dir in dataset_dirs:
+        items.extend(load_dataset(dataset_dir))
     if not items:
         logger.error("No items in dataset; nothing to do")
         return 1

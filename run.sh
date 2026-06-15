@@ -3,7 +3,7 @@
 # run.sh — run the parallel labeling tool and log the full process output.
 #
 # Usage:
-#   ./run.sh --dataset-dir <DIR> [--config config.yaml] [--output-dir <DIR>] [extra flags...]
+#   ./run.sh --dataset-dir <DIR> [<DIR> ...] [--config config.yaml] [--output-dir <DIR>] [extra flags...]
 #
 # All arguments are forwarded to `python -m parallel_labeling.cli`.
 # stdout and stderr are shown live AND appended to a timestamped log under logs/.
