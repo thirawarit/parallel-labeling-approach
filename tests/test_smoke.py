@@ -24,7 +24,7 @@ install_all()
 from parallel_labeling import models as models_mod  # noqa: E402
 from parallel_labeling import runner as runner_mod  # noqa: E402
 from parallel_labeling.config import (Config, ModelConfig)  # noqa: E402
-from parallel_labeling.dataset import (load_dataset)  # noqa: E402
+from parallel_labeling.dataset import (load_dataset, merge_datasets)  # noqa: E402
 from parallel_labeling.report import (write_reports)  # noqa: E402
 from parallel_labeling.runner import (run)  # noqa: E402
 
@@ -154,6 +154,38 @@ def _assert_pipeline(config: Config, label: str) -> None:
         assert len(rows_after) == 3, f"[{label}] resume should not duplicate rows"
 
 
+def _assert_merge_datasets() -> None:
+    """merge_datasets disambiguates clashing file_names across multiple dirs."""
+    with TemporaryDirectory() as tmp:
+        root: Path = Path(tmp)
+        dir_a: Path = root / "data_a"
+        dir_b: Path = root / "data_b"
+        _make_dataset(dir_a)  # has 0001, 0002, 0003
+        _make_dataset(dir_b)  # same relative file_names -> full collision
+
+        # Single dir: nothing relabeled, file_names left as-is.
+        single: List = merge_datasets([dir_a])
+        single_names: List[str] = sorted(it.file_name for it in single)
+        assert single_names == [f"audio/{s}.wav" for s in ("0001", "0002", "0003")], \
+            f"single-dir merge must not relabel: {single_names}"
+
+        merged: List = merge_datasets([dir_a, dir_b])
+        names: List[str] = sorted(it.file_name for it in merged)
+        assert len(merged) == 6, f"expected 6 merged items, got {len(merged)}"
+        assert len(names) == len(set(names)), f"file_names must be unique: {names}"
+        assert "data_a/audio/0001.wav" in names and "data_b/audio/0001.wav" in names, names
+        # audio_path is untouched so audio still loads from the original dir.
+        for it in merged:
+            assert it.audio_path.is_file(), f"audio_path must stay valid: {it.audio_path}"
+
+    print("MERGE DATASETS TEST PASSED")
+
+
+def test_merge_datasets() -> None:
+    """pytest entrypoint for the multi-dir merge."""
+    _assert_merge_datasets()
+
+
 def run_smoke_test() -> None:
     """Exercise both execution paths and assert identical invariants."""
     _patch_pipeline()
@@ -166,6 +198,8 @@ def run_smoke_test() -> None:
     # Shared device -> sequential single-process path.
     shared_cfg: Config = _make_config({"alpha": "cpu", "beta": "cpu", "gamma": "cpu"})
     _assert_pipeline(shared_cfg, "sequential")
+
+    _assert_merge_datasets()
 
     print("SMOKE TEST PASSED")
 

@@ -1,9 +1,9 @@
 """Load the HuggingFace AudioFolder ``metadata.jsonl`` and resolve audio paths."""
 
 import json
-from dataclasses import (dataclass)
+from dataclasses import (dataclass, replace)
 from pathlib import (Path)
-from typing import (List)
+from typing import (Dict, List, Sequence)
 
 from parallel_labeling.logging_utils import (get_logger)
 
@@ -54,3 +54,65 @@ def load_dataset(dataset_dir: Path) -> List[AudioItem]:
 
     logger.info("Loaded %d items from %s", len(items), metadata_path)
     return items
+
+
+def _dir_labels(dataset_dirs: Sequence[Path]) -> List[str]:
+    """Return a short, unique label per dataset dir, preserving input order.
+
+    Prefer the dir's own name; if two dirs share a name, fall back to a path that
+    keeps enough parent components to disambiguate, and finally to a positional
+    suffix so the labels are always unique.
+    """
+    names: List[str] = [d.name or str(d) for d in dataset_dirs]
+    labels: List[str] = list(names)
+    seen: Dict[str, int] = {}
+    for name in names:
+        seen[name] = seen.get(name, 0) + 1
+    for i, (d, name) in enumerate(zip(dataset_dirs, names)):
+        if seen[name] > 1:
+            parent: str = d.parent.name
+            labels[i] = f"{parent}/{name}" if parent else f"{name}#{i}"
+    # Guarantee uniqueness even if the parent-qualified labels still collide.
+    used: Dict[str, int] = {}
+    for i, label in enumerate(labels):
+        if label in used:
+            labels[i] = f"{label}#{i}"
+        used[labels[i]] = i
+    return labels
+
+
+def merge_datasets(dataset_dirs: Sequence[Path]) -> List[AudioItem]:
+    """Load and concatenate several datasets, disambiguating clashing file_names.
+
+    ``file_name`` is the identity key used for resume dedup, per-file result
+    aggregation, and report rows. When the same relative ``file_name`` appears in
+    more than one dir, the colliding items are prefixed with a per-dir label
+    (e.g. ``data_a/audio/0001.wav``) so each cell stays distinct. ``audio_path``
+    is left untouched, so audio still loads from the original location.
+    """
+    per_dir: List[List[AudioItem]] = [load_dataset(d) for d in dataset_dirs]
+    if len(per_dir) <= 1:
+        return per_dir[0] if per_dir else []
+
+    counts: Dict[str, int] = {}
+    for items in per_dir:
+        for item in items:
+            counts[item.file_name] = counts.get(item.file_name, 0) + 1
+
+    labels: List[str] = _dir_labels(dataset_dirs)
+    merged: List[AudioItem] = []
+    relabeled: int = 0
+    for label, items in zip(labels, per_dir):
+        for item in items:
+            if counts[item.file_name] > 1:
+                merged.append(replace(item, file_name=f"{label}/{item.file_name}"))
+                relabeled += 1
+            else:
+                merged.append(item)
+
+    if relabeled:
+        logger.warning(
+            "Disambiguated %d items whose file_name appeared in multiple dirs",
+            relabeled,
+        )
+    return merged

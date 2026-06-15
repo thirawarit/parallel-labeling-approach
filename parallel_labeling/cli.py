@@ -12,7 +12,7 @@ from pathlib import (Path)
 from typing import (List, Optional, Sequence)
 
 from parallel_labeling.config import (Config, load_config)
-from parallel_labeling.dataset import (AudioItem, load_dataset)
+from parallel_labeling.dataset import (AudioItem, merge_datasets)
 from parallel_labeling.logging_utils import (configure_logging, get_logger)
 from parallel_labeling.report import (write_reports)
 from parallel_labeling.runner import (run)
@@ -92,9 +92,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     config = _apply_overrides(config, args)
     logger.info("Models: %s", ", ".join(config.model_keys))
 
-    items: List[AudioItem] = []
-    for dataset_dir in dataset_dirs:
-        items.extend(load_dataset(dataset_dir))
+    items: List[AudioItem] = merge_datasets(dataset_dirs)
     if not items:
         logger.error("No items in dataset; nothing to do")
         return 1
